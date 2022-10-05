@@ -1,0 +1,26 @@
+# Cache
+__pycache__/
+
+# Keys/Certs/Sessions/Storages and similar
+*.pem
+*.session
+*.rdb
+
+# Environments
+.env
+*env/
+*venv/
+*ENV/
+*VENV/
+
+# IDE
+.idea/
+
+# Other
+redisdata/
+pgdata/
+pyrightconfig.json
+.data/googlecalendar/token.json
+.data/googlecalendar/credentials.json
+.data/googlesheets/token.json
+.data/googlesheets/credentials.json
