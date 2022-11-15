@@ -15,11 +15,6 @@ def create_calendar_kb(current_day: datetime):
     current_day_copy = current_day
     inline_keyboard = [
         [
-            InlineKeyboardButton('Обрати час 🗓', callback_data=choose_day_cb.new(
-                y=current_day.year, m=current_day.month, d=current_day.day
-            ))
-        ],
-        [
             InlineKeyboardButton('Календар ' + current_day.strftime('%B').lower(), callback_data=none_cb.new())
         ]
     ]
@@ -39,7 +34,7 @@ def create_calendar_kb(current_day: datetime):
         cash_list = [InlineKeyboardButton(' ', callback_data=none_cb.new()) for i in range(index_week_day)]
         num = index_week_day
     end_range = monthrange + 1
-    marker = '✔'
+    marker = '✓'
     if current_day.day > 15 and current_day.month == now().month:
         end_range = monthrange + 15
     day = 1
@@ -86,7 +81,15 @@ def create_calendar_kb(current_day: datetime):
         InlineKeyboardButton('➡', callback_data=days_cb.new(
             y=next_month_date.year, m=next_month_date.month, d=1))
     ])
-    return InlineKeyboardMarkup(row_width=7, inline_keyboard=inline_keyboard)
+    return InlineKeyboardMarkup(row_width=7, inline_keyboard=inline_keyboard), InlineKeyboardMarkup(
+        row_width=1, inline_keyboard=[
+            [
+                InlineKeyboardButton('Обрати цю дату 👌', callback_data=choose_day_cb.new(
+                    y=current_day.year, m=current_day.month, d=current_day.day
+                ))
+            ]
+        ]
+    )
 
 
 def no_times_kb(current_day: datetime):

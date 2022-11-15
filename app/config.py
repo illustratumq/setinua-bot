@@ -38,6 +38,7 @@ class TgBot:
     payment_token: str
     fondy_credit_key: str
     fondy_merchant_id: str
+    fondyp2p: str
 
 
 @dataclass
@@ -67,6 +68,7 @@ class Config:
                 payment_token=env.str('PAYMENT_TOKEN'),
                 fondy_credit_key=env.str('FONDY_CREDIT_KEY'),
                 fondy_merchant_id=env.str('FONDY_MERCHANT_ID'),
+                fondyp2p=env.str('P2P')
             ),
             db=DbConfig(
                 host=env.str('DB_HOST', 'localhost'),

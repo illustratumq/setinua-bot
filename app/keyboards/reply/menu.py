@@ -1,3 +1,4 @@
+from app.keyboards.reply.back import back_bt
 from app.keyboards.reply.base import *
 
 menu_kb = ReplyKeyboardMarkup(
@@ -14,7 +15,7 @@ menu_kb = ReplyKeyboardMarkup(
         ],
         [
             KeyboardButton('Про комплекс 🏐'),
-            KeyboardButton('Типові питання ❓'),
+            KeyboardButton('Ціни 💸'),
         ],
         [
             KeyboardButton('Інші послуги ℹ'),
@@ -54,6 +55,16 @@ subscribe_time_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton('Денний час')],
         [KeyboardButton('Вечірній час')]
+    ]
+)
+
+payback_kb = ReplyKeyboardMarkup(
+    row_width=1,
+    resize_keyboard=True,
+    one_time_keyboard=True,
+    keyboard=[
+        [KeyboardButton('Повернути кошти')],
+        [back_bt]
     ]
 )
 

@@ -118,8 +118,8 @@ class GoogleCalendar:
         return self.service.events().list(calendarId=calendar_id, pageToken=None).execute()['items']
 
     def reserved_time(self, calendar_id: str, day: datetime):
-        open_time = localize(day).replace(hour=7, minute=0, second=0, microsecond=0)
-        close_time = localize(day).replace(hour=22, minute=0, second=0, microsecond=0)
+        open_time = localize(day.replace(hour=7, minute=0, second=0, microsecond=0))
+        close_time = localize(day.replace(hour=22, minute=0, second=0, microsecond=0))
 
         events = self.events_list(calendar_id)
         day_events = []

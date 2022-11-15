@@ -30,7 +30,7 @@ async def start_cmd(msg: Message, user_db: UserRepo,
                     state: FSMContext, sheet: GoogleSheet,
                     config: Config
 ):
-    await state.finish()
+    await state.reset_state(with_data=True)
     if not await user_db.get_user(msg.from_user.id):
         if not msg.from_user.is_bot:
             await msg.answer(start_text, reply_markup=start_kb)

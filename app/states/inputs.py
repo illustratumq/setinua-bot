@@ -23,3 +23,8 @@ class UserStatusSG(StatesGroup):
     Actions = State()
     Hours = State()
     Status = State()
+
+
+class PaybackSG(StatesGroup):
+    Card = State()
+    Input = State()

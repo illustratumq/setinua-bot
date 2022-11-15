@@ -8,10 +8,13 @@ from app.config import Config
 from app.handlers.private.event import choose_type
 from app.keyboards.inline.pay import confirm_event_cb
 from app.keyboards.inline.setting import call_me_kb
+from app.keyboards.reply.back import cancel_kb
+from app.keyboards.reply.calendar import calendar_kb
 from app.keyboards.reply.profile import contact_kb, profile_kb, contact_device_kb
-from app.misc.enums import EventStatusEnum
-from app.misc.utils import construct_user_text
+from app.misc.enums import EventStatusEnum, SubStatusEnum
+from app.misc.utils import construct_user_text, localize
 from app.services.repos import UserRepo, SubRepo, CalendarRepo, EventRepo
+from app.states.calendar import DeleteSG
 from app.states.inputs import NameSG, ContactSG
 from data.googlecalendar.calendar_api import GoogleCalendar
 from data.googlesheets.sheets_api import GoogleSheet
@@ -22,6 +25,9 @@ PHONE_REGEX = re.compile(r'^[+]380[0-9]*$')
 async def profile_info(msg: Message, user_db: UserRepo, sub_db: SubRepo, state: FSMContext):
     user = await user_db.get_user(msg.from_user.id)
     subs = await sub_db.get_subs_by_user_id(msg.from_user.id)
+    subs = [sub for sub in subs if all(
+        [sub.status == SubStatusEnum.ACTIVE, sub.total_hours > 0]
+    )]
     text = (
         '🗂 [Ваш профіль]\n\n' + construct_user_text(user, subs)
     )
@@ -30,7 +36,7 @@ async def profile_info(msg: Message, user_db: UserRepo, sub_db: SubRepo, state: 
 
 
 async def rewrite_full_name(msg: Message):
-    await msg.answer('Надішліть ваше повне ім\'я (П.І.Б)')
+    await msg.answer('Надішліть ваше повне ім\'я (П.І.Б)', reply_markup=cancel_kb)
     await NameSG.Input.set()
 
 
@@ -72,7 +78,8 @@ async def save_custom_number_phone(msg: Message, user_db: UserRepo, state: FSMCo
                                    sheet: GoogleSheet, config: Config, calendar: GoogleCalendar,
                                    calendar_db: CalendarRepo):
     if len(msg.text) != len('+380XXXXXXXXX'):
-        await msg.answer('Перевірте правильність набору. Будь ласка, вкажіть номер повторно в форматі +380XXXXXXXXX')
+        await msg.answer('Перевірте правильність набору. Будь ласка, вкажіть номер повторно в форматі +380XXXXXXXXX',
+                         reply_markup=cancel_kb)
         return
     await msg.answer('Успішно зімнено')
     user = await user_db.get_user(msg.from_user.id)
@@ -92,25 +99,27 @@ async def choose_number_phone(msg: Message):
 
 
 async def confirm_user_event(call: CallbackQuery, event_db: EventRepo, user_db: UserRepo, calendar_db: CalendarRepo,
-                             callback_data, calendar: GoogleCalendar, sheet: GoogleSheet, config: Config):
-    await call.answer('😉 Гарного дня!')
+                             callback_data, calendar: GoogleCalendar, sheet: GoogleSheet, config: Config,
+                             state: FSMContext):
+    await call.message.delete_reply_markup()
     event_id = callback_data.get('event_id')
     action = callback_data.get('action')
     event = await event_db.get_event(int(event_id))
     user = await user_db.get_user(event.user_id)
     court = await calendar_db.get_calendar_by_google_id(event.calendar_id)
     if action == 'true':
+        await call.answer('Дякуємо за відповідь. Чекаємо на вас! 😉 Гарного дня!', show_alert=True)
         await event_db.update_event(event.event_id, status=EventStatusEnum.CONFIRM)
         calendar.event_confirm(event.calendar_id, event.google_id, user)
         sheet.write_event(event, user, config.misc.spreadsheet, court)
     else:
-        for chat_id in config.bot.admin_ids:
-            await call.bot.send_message(chat_id, f'Користувач {user.full_name}, {user.phone_number}, ({user.user_id} '
-                                        f'скасував замовлення №{event.event_id} на {event.start.strftime("%H:%M")}')
-        await event_db.update_event(event.event_id, status=EventStatusEnum.DELETED)
-        calendar.delete_event(event.calendar_id, event.google_id)
-    sheet.write_event(event, user, config.misc.spreadsheet, court)
-    await call.message.delete_reply_markup()
+        await call.message.answer(
+            f'Ви бажаєте видалити замовлення №{event_id} на {localize(event.start).strftime("%A, %d %B")}. '
+            f'Підтвердіть свій вибір.',
+            reply_markup=calendar_kb
+        )
+        await state.update_data(event_id=event_id)
+        await DeleteSG.Confirm.set()
 
 
 def setup(dp: Dispatcher):

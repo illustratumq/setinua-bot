@@ -71,8 +71,9 @@ async def save_calendar_location(msg: Message, state: FSMContext):
         f'Оберіть "Налаштування і доступ".\n'
         f'3️⃣ У розділі доступ окремих користувачів натисніть "Додати людей"\n'
         f'4️⃣ Введіть пошту сервісного акаунту* та у вкладці "Доступ" оберіть '
-        f'"Вносити зміни й керувати спільним доступом"\n'
-        f'5️⃣ У вкладці "Інтеграція календаря" скопіюйте Ідентифікатор календаря та наділшіть мені.\n\n'
+        f'"Вносити зміни й керувати спільним доступом. А також поставте галочку в розділі '
+        f'"Зробити доступним для всіх" (Переглядати всі події)\n'
+        f'5️⃣ У вкладці "Інтеграція календаря" скопіюйте <b>Ідентифікатор календаря</b> та наділшіть сюди.\n\n'
         f'* - setcalendar@setinuacalendar.iam.gserviceaccount.com'
     )
     await msg.answer(text, reply_markup=cancel_kb)
@@ -148,10 +149,13 @@ async def user_search(msg: Message):
 
 async def user_actions(msg: Message, user_db: UserRepo, event_db: EventRepo,
                        config: Config, state: FSMContext):
-    user = await user_db.get_user(int(msg.text))
-    if user is None:
-        await msg.answer('Користувача з таким id не знайдено. Спробуйте ще раз')
-        return
+    try:
+        user = await user_db.get_user(int(msg.text))
+        if user is None:
+            await msg.answer('Користувача з таким id не знайдено. Спробуйте ще раз')
+            return
+    except:
+        await msg.answer('Неправильний формат id\n\nЗнайти id користувача @ShowJsonBot\n\nНазад /admin')
     else:
         user_link = 'https://docs.google.com/spreadsheets/d/{}/edit#gid=0&range=A{}:D{}'.format(
             config.misc.spreadsheet, user.spreadsheet_id, user.spreadsheet_id
@@ -186,7 +190,6 @@ async def user_add_hours(msg: Message, sub_db: SubRepo, state: FSMContext):
     data = await state.get_data()
     if str(msg.text).isnumeric():
         await sub_db.add(
-            spreadsheet_id=len(await sub_db.get_all()) + 1,
             user_id=data['user_id'],
             description='Додані години',
             total_hours=float(msg.text),

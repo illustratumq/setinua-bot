@@ -27,14 +27,14 @@ def construct_user_text(user: User, subs: list[Subscribe]):
         f'<b>Ім\'я</b>: {user.full_name}\n'
         f'<b>Статус</b>: {status}\n'
         f'<b>Номер телефону</b>: {phone_number}\n'
-        f'<b>Замовлених годин</b>: {user.hours}\n'
+        f'<b>Орендовано годин</b>: {user.hours}\n'
     )
     if subs:
-
-        subs_text = '\n\n<b>Абонементи</b>:\n\n'
+        subs_text = '\n⭐ <b>Абонементи</b>:\n\n'
         subs_text += '\n\n'.join(
             [
-                f'<b>Абонемент #{sub.sub_id}</b>\n{sub.description}\nЗалишилось годин: {sub.total_hours}'
+                f'<b>Абонемент №{sub.sub_id}</b>\nЗалишилось {sub.total_hours} годин\n'
+                f'Додтакова інформація: {sub.description}'
                 for sub in subs if sub.status == SubStatusEnum.ACTIVE
             ]
         )
@@ -54,6 +54,8 @@ def construct_user_status(user: User) -> str:
 
 
 def get_status(event: Event) -> str:
+    if event.price == 0:
+        return f'Оплачено з абонементу'
     if event.status == EventStatusEnum.RESERVED:
         return f'Зарезервовано на 15 хв'
     if event.status == EventStatusEnum.PAID:
@@ -71,7 +73,17 @@ def get_status_sub(sub: Subscribe) -> str:
         return 'Нактивна'
 
 
-def amount_solution(user: User, event: Event | str):
+def amount_solution(user: User, event: Event | str = None, time: tuple = None, sub: bool = False):
+    if sub:
+        if event == 'after':
+            return 9000
+        else:
+            return 6300
+    if event is None:
+        start, end = time
+    else:
+        start = event.start
+        end = event.end
     price_list = {
         '1.0': {
             'weekdays': {
@@ -134,11 +146,11 @@ def amount_solution(user: User, event: Event | str):
             }
         }
     }
-    if isinstance(event, Event):
+    if event is None or isinstance(event, Event):
         celebrates = [
             '01.01', '07.01', '08.03', '01.05', '09.05', '28.06', '24.08', '14.10', '25.12'
         ]
-        hours = str(float((event.end - event.start).seconds/3600))
+        hours = str(float((end - start).seconds/3600))
         if user.status in (UserStatusEnum.VIP, UserStatusEnum.COMMON):
             index = 0
         elif user.status == UserStatusEnum.REGULAR:
@@ -146,38 +158,26 @@ def amount_solution(user: User, event: Event | str):
         else:
             index = 2
 
-        if event.start.strftime('%a') in ('Сб', 'НД'):
-            price = check_time(price_list[hours]['weekends'], event)[index]
-        elif event.start.strftime('%d.%m') in celebrates:
-            price = check_time(price_list[hours]['weekends'], event)[index]
+        if start.strftime('%a') in ('Сб', 'НД'):
+            price = check_time(price_list[hours]['weekends'], start)[index]
+        elif start.strftime('%d.%m') in celebrates:
+            price = check_time(price_list[hours]['weekends'], start)[index]
         else:
-            price = check_time(price_list[hours]['weekdays'], event)[index]
+            price = check_time(price_list[hours]['weekdays'], start)[index]
 
         return price
-    else:
-        if user.status in (UserStatusEnum.VIP, UserStatusEnum.COMMON):
-            if event == 'after':
-                return 10000
-            else:
-                return 7000
-        elif user.status == UserStatusEnum.REGULAR:
-            if event == 'after':
-                return 9000
-            else:
-                return 6300
 
 
-def check_time(times: dict, event: Event) -> list[int]:
+def check_time(times: dict, start_date) -> list[int]:
     current = now().replace(microsecond=0, second=0)
     for time, prices in times.items():
         if '-' in time:
             start, end = time.split('-')
             start = current.replace(minute=int(start.split(':')[-1]), hour=int(start.split(':')[0]))
             end = current.replace(minute=int(end.split(':')[-1]), hour=int(end.split(':')[0]))
-            print(start, end, localize(event.start.replace(microsecond=0, second=0)))
-            if start <= localize(current.replace(hour=event.start.hour, minute=event.start.minute)) < end:
+            if start <= localize(current.replace(hour=start_date.hour, minute=start_date.minute)) < end:
                 return prices
         else:
-            if event.start.strftime('%H:%M') == time:
+            if start_date.strftime('%H:%M') == time:
                 return prices
 

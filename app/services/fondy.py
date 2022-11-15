@@ -12,9 +12,10 @@ log = logging.getLogger(__name__)
 
 class FondyAPIWrapper:
 
-    def __init__(self, merchant_id: str, secret_key: str):
+    def __init__(self, merchant_id: str, secret_key: str, credit_key: str):
         self.merchant_id = merchant_id
         self.secret_key = secret_key
+        self.credit_key = credit_key
         self.headers = {'Content-Type': 'application/json'}
 
     @staticmethod
@@ -33,11 +34,13 @@ class FondyAPIWrapper:
             return False
 
     @staticmethod
-    def _check_result(result: dict):
+    def _check_result(result: dict, p2p: bool = False):
         if result.get('response_status', None) == 'failure':
             log.exception(result)
             return False
         elif result['response_status'] == 'success':
+            if p2p:
+                return True
             return result['checkout_url']
 
     async def create_order(self, description: str, amount: int, user: User, event_id: str):
@@ -77,6 +80,30 @@ class FondyAPIWrapper:
         }
         response = await self._post_request(url, data, self.headers)
         return self._check_status(response.get('response', dict()))
+
+    async def withdraw(self, amount: int, receiver_card_number: str, user_id: int):
+        date = datetime.now().strftime('%d%m%y%H%S%M')
+        url = 'https://pay.fondy.eu/api/p2pcredit/'
+        order_desc = f'user_{user_id}'
+        order_id = 'test_order' + date
+        signature = self._generate_signature(
+            self.credit_key, str(amount), 'UAH', self.merchant_id, order_desc, order_id, receiver_card_number
+        )
+        body_data = {
+            'request': {
+                'order_id': order_id,
+                'order_desc': order_desc,
+                'currency': 'UAH',
+                'amount': str(amount),
+                'receiver_card_number': receiver_card_number,
+                'signature': signature,
+                'merchant_id': self.merchant_id,
+            }
+        }
+        result = await self._post_request(url, body_data=body_data, headers=self.headers)
+        result = result.get('response', dict())
+        self._check_result(result, p2p=True)
+        return True
 
     @staticmethod
     def _generate_signature(*values) -> str:

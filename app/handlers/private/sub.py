@@ -40,7 +40,7 @@ async def subscribe_confirm(msg: Message, user_db: UserRepo, state: FSMContext):
     data = await state.get_data()
     user = await user_db.get_user(msg.from_user.id)
     sub = 'before' if all([msg.text == 'Денний час', data['days'] == 'Будні дні']) else 'after'
-    amount = amount_solution(user, sub)
+    amount = amount_solution(user, sub, sub=True)
     text = (
         f'Ви збираєтесесь купити абонемент\n\n'
         f'Дні використання: {data["days"]}\n'
@@ -65,7 +65,7 @@ async def pay_subscribe(
         f'({user.user_id})'
     )
     sub = await sub_db.add(
-        user_id=msg.from_user.id, description=f'Час: {data["days"]} ({data["times"].lower()})'
+        user_id=msg.from_user.id, description=f'{data["days"]} ({data["times"].lower()})'
     )
     order = await fondy.create_order(
         description=description,
@@ -91,10 +91,8 @@ async def pay_subscribe(
     msg = await msg.answer(text, reply_markup=pay_kb(order['url'], event_id=sub.sub_id, type_='sub'))
     job = scheduler.add_job(
         name=f'Перевірка підписки №{sub.sub_id}',
-        func=check_order_sub_polling, trigger='date',
-        next_run_time=datetime.now() + timedelta(seconds=5), max_instances=5,
-        kwargs=dict(msg=msg, sub=sub, sub_db=sub_db, user_db=user_db, fondy=fondy,
-                    timeout=5, sheet=sheet, config=config)
+        func=check_order_sub_polling, trigger='interval', seconds=6, max_instances=5,
+        kwargs=dict(msg=msg, sub=sub, sub_db=sub_db, user_db=user_db, fondy=fondy, sheet=sheet, config=config)
     )
     await sub_db.update_sub(
         sub.sub_id,

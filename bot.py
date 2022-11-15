@@ -36,7 +36,7 @@ async def main():
     db_engine, sqlalchemy_session_pool = await create_db_engine_and_session_pool(config.db.sqlalchemy_url, log_level)
     calendar = GoogleCalendar()
     sheets = GoogleSheet()
-    fondy = FondyAPIWrapper(config.bot.fondy_merchant_id, config.bot.fondy_credit_key)
+    fondy = FondyAPIWrapper(config.bot.fondy_merchant_id, config.bot.fondy_credit_key, credit_key=config.bot.fondyp2p)
     scheduler = compose_scheduler(config, bot, sqlalchemy_session_pool)
 
     allowed_updates = (

@@ -66,7 +66,7 @@ class GoogleSheet:
     def delete_user(self, user: User, spreadsheet_id: str):
         self.update_cells(
             spreadsheet_id=spreadsheet_id,
-            coordinates=f'Users!A{user.spreadsheet_id+1}:{user.spreadsheet_id+1}',
+            coordinates=f'Users!A{user.spreadsheet_id+1}:D{user.spreadsheet_id+1}',
             values=['', '', '', '']
         )
 
@@ -74,34 +74,39 @@ class GoogleSheet:
                     court: Calendar = None):
         if isinstance(event, Event):
             start, end = localize(event.start).strftime('%H:%M'), localize(event.end).strftime('%H:%M')
-            date = localize(event.end).strftime('%d.%m.%Y')
+            date = localize(event.end).strftime('%A %d %B')
             values = [
-                f'Оренда корту №{event.event_id}',
-                f'{user.full_name} ({user.phone_number}), {user.user_id}',
-                f'{event.price}',
-                f'{start} - {end} {date}',
-                f'{court.location} ({court.name})',
-                f'{get_status(event)}'
+                f'№{event.event_id}',
+                f'{court.name}',
+                f'{date} з {start} по {end}, {event.start.year}',
+                f'{get_status(event)}',
+                f'{user.phone_number}',
+                f'{user.full_name}',
+                f'{user.user_id}',
+                f'{event.price}'
             ]
         else:
+            date = localize(event.created_at).strftime('%A %d %B')
             values = [
-                f'Абонемент #{event.sub_id}',
-                f'{user.full_name} ({user.phone_number}), {user.user_id}',
-                f'{event.price}',
-                f'{localize(event.created_at).strftime("%H:%M %d.%m.%Y")}',
-                f'-',
-                f'{get_status_sub(event)}'
+                f'№{event.sub_id}',
+                f'Абонемент',
+                f'Придбаний {date}',
+                f'{get_status_sub(event)}',
+                f'{user.phone_number}',
+                f'{user.full_name}',
+                f'{user.user_id}',
+                f'{event.price}'
             ]
         event_id = event.event_id if isinstance(event, Event) else event.sub_id
         self.update_cells(
             spreadsheet_id=spreadsheet_id,
-            coordinates=f'Events!A{event_id+1}:F{event_id+1}',
+            coordinates=f'Events!A{event_id+1}:H{event_id+1}',
             values=[values]
         )
 
     def delete_event(self, event: Event | Subscribe, spreadsheet_id: str):
         self.update_cells(
             spreadsheet_id=spreadsheet_id,
-            coordinates=f'Events!A{event.event_id}:{event.event_id}',
+            coordinates=f'Events!A{event.event_id}:H{event.event_id}',
             values=[['', '', '', '', '', '']]
         )

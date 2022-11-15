@@ -47,7 +47,7 @@ class EventRepo(BaseRepo[Event]):
     async def get_events(self, user_id: int) -> list[Event]:
         return await self.get_all(self.model.user_id == user_id, self.model.status != EventStatusEnum.DELETED)
 
-    async def get_event_today(self):
+    async def get_event_paid(self):
         return await self.get_all(
             self.model.status == EventStatusEnum.PAID
         )

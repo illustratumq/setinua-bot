@@ -1,15 +1,17 @@
 import logging
 from datetime import datetime, timedelta
 
-
+import numpy as np
 from aiogram import Dispatcher
 from aiogram.dispatcher import FSMContext
 from aiogram.types import Message, CallbackQuery
 from apscheduler_di import ContextSchedulerDecorator
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import sessionmaker
 
 from app.config import Config
+from app.keyboards.reply.back import back_kb
 from app.keyboards.reply.events import choose_sub_kb
-from app.models.calendar import Calendar
 from app.states.inputs import NameSG
 from data.googlecalendar.calendar_api import GoogleCalendar
 from app.handlers.private.start import start_cmd
@@ -31,25 +33,44 @@ from app.services.repos import CalendarRepo, EventRepo, UserRepo, SubRepo
 from app.states.calendar import EventSG
 from data.googlesheets.sheets_api import GoogleSheet
 
-format_time = '%B, %d, %A'
+format_time = '%A, %d %B'
 locale.setlocale(locale.LC_ALL, 'uk_UA.UTF8')
 log = logging.getLogger(__name__)
 
 
 async def reserved_times_list(calendar: GoogleCalendar, calendar_db: CalendarRepo, day: datetime):
-    answer_times = []
-    res_times_cache = []
-    courts = len(await calendar_db.get_all())
-    if courts == 0:
+    inputs = []
+    outputs = []
+    courts = await calendar_db.get_all()
+    for court in courts:
+        inputs.append(calendar.reserved_time(court.google_id, day))
+    start = now().replace(hour=7, minute=0, second=0)
+    end = start.replace(hour=22)
+    size = int((end - start) / timedelta(minutes=30)) + 1
+    base_date_signal = [(start + timedelta(minutes=30 * i)).strftime('%H:%M') for i in range(size)]
+    for input_signal in inputs:
+        output_signal = np.zeros(size)
+        for date in input_signal:
+            start_date, end_date = date.split(' - ')
+            if start_date in base_date_signal:
+                index_start = base_date_signal.index(start_date)
+                index_end = base_date_signal.index(end_date)
+                output_signal[index_start:index_end + 1] = 1
+                outputs.append(output_signal)
+    out = sum(outputs)
+    if isinstance(out, int):
         return []
-    for court in await calendar_db.get_all():
-        res_times = calendar.reserved_time(court.google_id, day)
-        for t in res_times:
-            res_times_cache.append(t)
-    for t in res_times_cache:
-        if res_times_cache.count(t) == courts:
-            answer_times.append(t)
-    return list(set(answer_times))
+    reserved_times = []
+    cache = []
+    for i in range(size):
+        if out[i] >= len(courts):
+            cache.append((start + timedelta(minutes=30 * i)).strftime('%H:%M'))
+            if i != size and out[i+1] <= len(courts):
+                reserved_times.append(cache)
+                cache = []
+            elif i == size:
+                reserved_times.append(cache)
+    return [f'{lst[0]} - {lst[-1]}' for lst in reserved_times]
 
 
 async def choose_type(msg: Message, user_db: UserRepo, state: FSMContext):
@@ -68,33 +89,51 @@ async def choose_type(msg: Message, user_db: UserRepo, state: FSMContext):
 async def choose_date(msg: Message, state: FSMContext):
     now_date = ', '.join([w.capitalize() for w in now().strftime(format_time).split(', ')])
     text = (
-        f'<b>1)</b> 🗓 Оберіть дату оренди\n\n'
-        f'Поточна дата: {now_date}\n'
+        f'Обрана дата - <i><b>Сьогодні ({now_date})</b></i>.\nНатисніть <b>"Обрати цю дату 👌"</b> '
+        f'або оберіть іншу.'
     )
     await state.update_data(reserved_times=[])
-    await msg.answer(text, reply_markup=create_calendar_kb(now()))
+    await msg.answer('Будь-ласка оберіть дату бронювання корту', reply_markup=back_kb)
+    date_kb, choose_kb = create_calendar_kb(now())
+    cal_msg = await msg.answer('Натисніть на потрібну дату в календарі ⬇', reply_markup=date_kb)
+    lst_msg = await msg.answer(text, reply_markup=choose_kb)
+    await state.update_data(last_msg_id=lst_msg.message_id, calendar_msg_id=cal_msg.message_id, now_date=now_date)
 
 
 async def pagination_calendar(call: CallbackQuery, callback_data: dict, state: FSMContext,
                               calendar: GoogleCalendar, calendar_db: CalendarRepo):
+    data = await state.get_data()
+    await call.bot.delete_message(call.from_user.id, data['last_msg_id'])
+    await call.bot.delete_message(call.from_user.id, data['calendar_msg_id'])
+    wait = await call.message.answer('Перевіряю вільні години ⌛')
     current_day = now().replace(
         year=int(callback_data['y']),
         month=int(callback_data['m']),
         day=int(callback_data['d']),
     )
+    reserved_times = await reserved_times_list(calendar, calendar_db, current_day)
+    answer = generic_available_times(
+        start=localize(current_day).replace(hour=7, minute=0, second=0, microsecond=0),
+        end=localize(current_day).replace(hour=21, minute=0, second=0, microsecond=0),
+        reserved_times=reserved_times, only_keyboard=True
+    )
+    now_date = ', '.join([w.capitalize() for w in current_day.strftime(format_time).split(', ')])
+    if len(answer[0]) == 0:
+        await state.finish()
+        await call.message.answer(f'❌ Немає вільних годин на {now_date}')
+        await choose_date(call.message, state)
+        return
     if localize(current_day).replace(hour=22, minute=0) < now():
         await call.answer('Вибрана дата вже недоступна', show_alert=True)
         return
     await call.answer()
-    await call.message.delete_reply_markup()
-    now_date = ', '.join([w.capitalize() for w in current_day.strftime(format_time).split(', ')])
-    text = (
-        f'<b>1)</b> 🗓 Ви обрали дату: {now_date}\n'
-        f'<b>2)</b> Оберіть час оренди 👇\n\nкнопка "Обрати час 🗓"'
-    )
-    reserved_times = await reserved_times_list(calendar, calendar_db, current_day)
+    await wait.delete()
     await state.update_data(reserved_times=reserved_times, now_date=now_date)
-    await call.message.edit_text(text, reply_markup=create_calendar_kb(current_day))
+    date_kb, choose_kb = create_calendar_kb(current_day)
+    cal_msg = await call.message.answer('Натисніть на потрібну дату в календарі ⬇', reply_markup=date_kb)
+    msg = await call.message.answer(f'Ви обрали дату: <i><b>{now_date}</b></i>.\nНатисніть <b>"Обрати цю дату 👌"</b>'
+                                    f' або оберіть іншу.', reply_markup=choose_kb)
+    await state.update_data(last_msg_id=msg.message_id, calendar_msg_id=cal_msg.message_id)
 
 
 async def none_callback_answer(call: CallbackQuery):
@@ -104,7 +143,12 @@ async def none_callback_answer(call: CallbackQuery):
 async def choose_event_data(call: CallbackQuery, callback_data: dict, state: FSMContext,
                             calendar: GoogleCalendar, calendar_db: CalendarRepo):
     await call.answer()
+    data = await state.get_data()
     await call.message.delete()
+    try:
+        await call.bot.delete_message(call.from_user.id, data['calendar_msg_id'])
+    except:
+        pass
     current = now().replace(
         year=int(callback_data['y']),
         month=int(callback_data['m']),
@@ -113,20 +157,19 @@ async def choose_event_data(call: CallbackQuery, callback_data: dict, state: FSM
     )
     now_date = ', '.join([w.capitalize() for w in current.strftime(format_time).split(', ')])
     await state.update_data(now_date=now_date)
-    data = await state.get_data()
     reserved_times = await reserved_times_list(calendar, calendar_db, current)
     text = (
         f'<b>1)</b> 🗓 Ви обрали дату: {data["now_date"]}\n'
         f'<b>2)</b> Оберіть час початку бронювання корту 👇'
     )
-    reply_markup = generic_available_times(
-        start=localize(current.replace(hour=7, minute=0, second=0, microsecond=0)),
-        end=localize(current.replace(hour=21, minute=0, second=0, microsecond=0)),
+    reply_markup, answer = generic_available_times(
+        start=localize(current).replace(hour=7, minute=0, second=0, microsecond=0),
+        end=localize(current).replace(hour=21, minute=0, second=0, microsecond=0),
         reserved_times=reserved_times
     )
-    if reply_markup is None:
+    if len(answer[0]) == 0:
         await state.finish()
-        await call.message.answer('Немає вільних годин')
+        await call.message.answer(f'❌ Немає вільних годин на {now_date}')
         await choose_date(call.message, state)
         return
     await call.message.answer(text=text, reply_markup=reply_markup)
@@ -150,13 +193,13 @@ async def start_date_save(msg: Message, state: FSMContext):
         end = start + timedelta(hours=1)
     else:
         end = start + timedelta(hours=3)
-    reply_markup = generic_available_times(
+    reply_markup, answer = generic_available_times(
         start=start,
         end=end,
         reserved_times=data['reserved_times'],
         remove_start=True
     )
-    if reply_markup is None:
+    if answer is None:
         await state.finish()
         await msg.answer('Немає вільних годин')
         await choose_date(msg, state)
@@ -186,7 +229,9 @@ async def end_date_save(msg: Message, state: FSMContext, user_db: UserRepo, sub_
         else:
             sub_type = SubTypeEnum.WEEKMORNING
     reply_markup = calendar_kb
-    subs = [sub for sub in subs if sub.type in (sub_type, SubTypeEnum.ALL) and sub.status == SubStatusEnum.ACTIVE]
+    subs = [sub for sub in subs if sub.type in (sub_type, SubTypeEnum.ALL) and all(
+        [sub.status == SubStatusEnum.ACTIVE, sub.total_hours > 0]
+    )]
     if subs:
         reply_markup = confirm_event_kb
         await state.update_data(subs=[sub.sub_id for sub in subs])
@@ -200,12 +245,13 @@ async def end_date_save(msg: Message, state: FSMContext, user_db: UserRepo, sub_
         return
     else:
         await state.update_data(calendar_id=court.calendar_id)
+    amount = amount_solution(user, time=(start, end))
     text = (
-        f'<b>1)</b> 🗓 Ви обрали дату: {data["now_date"]}\n\n'
-        '<b>2)</b> 🆕 Нове бронювання\n'
-        f'<b>Початок</b>: {start_date}\n'
-        f'<b>Кінець</b>: {msg.text}\n'
-        f'📍 Корт: {court.location} (Корт {court.name})\n\n'
+        f'🗓 Ви обрали дату: <b>{data["now_date"]}</b>\n\n'
+        f'⏰Початок: <b>{start_date}</b>\n'
+        f'⏰Кінець: <b>{msg.text}</b>\n'
+        f'💸Ціна: <b>{amount}</b>\n'
+        f'📍Корт: <b>{court.name}</b>, {court.location}\n\n'
         f'Підтвердіть свій вибір 👇'
     )
     await msg.answer(text, reply_markup=reply_markup)
@@ -218,7 +264,7 @@ async def user_sub_choose(msg: Message, sub_db: SubRepo, state: FSMContext):
     data = await state.get_data()
     subs = [await sub_db.get_sub(int(sub_id)) for sub_id in data['subs']]
     for sub in subs:
-        text += f'Підписка #{sub.sub_id}\n{sub.description}\nЗалишилось годин: {sub.total_hours}\n\n'
+        text += f'🎟 Абонемент №{sub.sub_id} ({sub.description})\nЗалишилось годин: {sub.total_hours}\n\n'
     await msg.answer(text, reply_markup=subs_kb([sub for sub in subs if sub.status == SubStatusEnum.ACTIVE]))
     await EventSG.Confirm.set()
 
@@ -266,11 +312,10 @@ async def confirm_event(msg: Message, calendar: GoogleCalendar, calendar_db: Cal
     )
     text = (
         f'<b>3)</b>🧾 Замовлення оренди корту №{event.event_id}\n\n'
-        f'Дата: {start.strftime(format_time)}\n'
-        f'Час: {start.strftime(format_hours)} - {end.strftime(format_hours)}\n'
-        f'Ціна: {amount} грн.\n'
-        f'📍 Корт: {court.location} ({court.name})\n'
-
+        f'🗓Дата: <b>{start.strftime(format_time)}</b>\n'
+        f'⏰Час: <b>з {start.strftime(format_hours)} до {end.strftime(format_hours)}</b>\n'
+        f'💸Ціна: <b>{amount} грн.</b>\n'
+        f'📍Корт: {court.location} (<b>{court.name}</b>)\n'
     )
     add_text = (
         f'\n\nℹ Ми зарезервували цей час для вас на 15 хв. '
@@ -291,21 +336,39 @@ async def confirm_event(msg: Message, calendar: GoogleCalendar, calendar_db: Cal
                                     price=0)
         await start_cmd(msg, user_db, state, sheet, config)
         sheet.write_event(event, user, config.misc.spreadsheet, court)
+        for admin_id in config.bot.admin_ids:
+            try:
+                event_link = 'https://docs.google.com/spreadsheets/d/{}/edit#gid=1781353891&range=A{}:D{}'.format(
+                    config.misc.spreadsheet, event.event_id + 1, event.event_id + 1
+                )
+                text = (
+                    f'🆕 (№{event.event_id}) Нова оренда корту заброньована користувачем {user.full_name}\n\n'
+                    f'Тип оплати: Абонементn\n'
+                    f'📌 Дата: {event.start.strftime("%A %d, %B")} з {event.start.strftime("%H:%M")} по '
+                    f'{event.end.strftime("%H:%M")}\n\n'
+                    f'📚 <a href="{event_link}">Ця подія в таблиці</a>'
+                )
+                await msg.bot.send_message(admin_id, text)
+            except:
+                pass
         return
     text += add_text
     # ORDER CREATION
     description = (
-        f'(№{event.event_id}) Оплата оренди корту #{court.calendar_id} '
-        f'{court.location} {user.full_name} ({user.user_id})'
+        f'№{event.event_id} Оплата оренди корту {court.name} {start.strftime(format_time)} '
+        f'з {start.strftime(format_hours)} до {end.strftime(format_hours)}. Користувач'
+        f'{user.full_name} ({user.user_id}), тел. {user.phone_number}'
     )
     order = await fondy.create_order(description=description, amount=amount, user=user, event_id=event.event_id)
     msg = await msg.answer(text, reply_markup=pay_kb(order['url'], event_id=event.event_id))
     job = scheduler.add_job(
         name=f'Перевірка оплати №{event.event_id}', func=check_order_polling,
-        trigger='interval', seconds=3600, next_run_time=datetime.now() + timedelta(seconds=5), max_instances=5,
-        kwargs=dict(msg=msg, event=event, user_db=user_db, event_db=event_db, fondy=fondy,
-                    calendar=calendar, hours=hours, timeout=5, calendar_db=calendar_db,
-                    sheet=sheet)
+        trigger='interval', seconds=6, max_instances=5,
+        kwargs=dict(
+            msg=msg, event=event, user_db=user_db, event_db=event_db, fondy=fondy,
+            calendar=calendar, hours=hours, calendar_db=calendar_db,
+            sheet=sheet
+        )
     )
     await event_db.update_event(
         event.event_id,
@@ -364,7 +427,7 @@ async def decline_event(
         await event_db.delete_event(event.event_id)
     else:
         sub = await sub_db.get_sub(event_id)
-        await call.message.answer(f'Абонемент #{sub.sub_id} скасовано', reply_markup=menu_kb)
+        await call.message.answer(f'Абонемент №{sub.sub_id} скасовано', reply_markup=menu_kb)
         user = await user_db.get_user(sub.sub_id)
         if scheduler.get_job(sub.job_id):
             scheduler.remove_job(sub.job_id)
@@ -381,35 +444,56 @@ async def check_order_polling(
         calendar_db: CalendarRepo,
         fondy: FondyAPIWrapper,
         calendar: GoogleCalendar,
-        timeout: float,
         hours: int,
         sheet: GoogleSheet, config: Config,
+        scheduler: ContextSchedulerDecorator,
 ):
     try:
-        now_date = now()
-        check = False
-        while not check:
-            check = await fondy.check_order(event.order_id)
-            # log.warning(check)
-            if (now() - now_date).seconds > 60*15:
-                await delete_event(msg, event, event_db, user_db, calendar_db, sheet, calendar, config)
-            if await event_db.get_event(event.event_id) is None:
-                break
-            if check:
-                log.info(f'Успішна оплата #{event.event_id}')
-                await msg.delete_reply_markup()
-                user = await user_db.get_user(event.user_id)
-                court = await calendar_db.get_calendar_by_google_id(event.calendar_id)
-                await user_db.update_user(user.user_id, hours=user.hours + hours)
-                await check_user_status(user, msg, user_db)
-                await event_db.update_event(event.event_id, status=EventStatusEnum.PAID)
-                await msg.reply(f'Замовлення №{event.event_id} успішно оплачено', reply_markup=menu_kb)
-                calendar.event_paid(event.calendar_id, event.google_id, user)
-                sheet.write_event(await event_db.get_event(event.event_id), user, config.misc.spreadsheet, court)
-                break
+        now_date = event.created_at
+        check = await fondy.check_order(event.order_id)
+        if (now() - now_date).seconds > 60*15:
+            await delete_event(msg, event, event_db, user_db, calendar_db, sheet, calendar, config)
+            scheduler.get_job(event.job_id).remove()
+        if await event_db.get_event(event.event_id) is None:
+            return
+        if check:
+            log.info(f'Замовлення №{event.event_id} успішно оплчено')
+            await msg.delete_reply_markup()
+            user = await user_db.get_user(event.user_id)
+            court = await calendar_db.get_calendar_by_google_id(event.calendar_id)
+            scheduler.get_job(event.job_id).remove()
+            await user_db.update_user(user.user_id, hours=user.hours + hours)
+            await check_user_status(user, msg, user_db)
+            await event_db.update_event(event.event_id, status=EventStatusEnum.PAID)
+            await msg.reply(f'Замовлення №{event.event_id} успішно оплачено ✅', reply_markup=menu_kb)
+            await msg.answer(guide_text)
+            calendar.event_paid(event.calendar_id, event.google_id, user)
+            sheet.write_event(await event_db.get_event(event.event_id), user, config.misc.spreadsheet, court)
+            for admin_id in config.bot.admin_ids:
+                try:
+                    event_link = 'https://docs.google.com/spreadsheets/d/{}/edit#gid=1781353891&range=A{}:D{}'.format(
+                        config.misc.spreadsheet, event.event_id + 1, event.event_id + 1
+                    )
+                    text = (
+                        f'🆕 (№{event.event_id}) Нова оренда корту заброньована користувачем {user.full_name}\n\n'
+                        f'📌 Дата: {event.start.strftime("%A %d, %B")} з {event.start.strftime("%H:%M")} по '
+                        f'{event.end.strftime("%H:%M")}\n\n'
+                        f'📚 <a href="{event_link}">Ця подія в таблиці</a>'
+                    )
+                    await msg.bot.send_message(admin_id, text=text)
+                except:
+                    pass
     except Exception as Error:
-        log.warning(f'Помилка оплати #{event.event_id}\n\n{Error}\n')
-        # time.sleep(timeout)
+        error = str(Error).replace('<', '').replace('>', '')
+        user = await user_db.get_user(event.user_id)
+        log.warning(f'Помилка оплати #{event.event_id}\n\n{error}\n')
+        await msg.answer(f'❌ Оплата оренди №{event.event_id} не була зафіксована через помилку\n\n{error}\n\n'
+                         f'Будь-ласка зв\'яжіться з адміністрацією для уточнення.')
+        for admin_id in config.bot.admin_ids:
+            await msg.bot.send_message(admin_id, f'❌ Оплата від користувача {user.full_name} (№{event.event_id}) '
+                                                 f'була не зарахована через помилку\n\n{Error}\n\n'
+                                                 f'Номер телефону: {user.phone_number}')
+        scheduler.get_job(event.job_id).remove()
 
 
 async def delete_event(msg: Message, event: Event, event_db: EventRepo,  user_db: UserRepo, calendar_db: CalendarRepo,
@@ -429,26 +513,46 @@ async def check_order_sub_polling(
         user_db: UserRepo,
         fondy: FondyAPIWrapper,
         sheet: GoogleSheet, config: Config,
-        timeout: float = 0.5,
+        scheduler: ContextSchedulerDecorator
 ):
-    now_date = now()
-    check = False
-    while not check:
+    try:
+        now_date = sub.created_at
         await sub_db.get_sub(sub.sub_id)
         check = await fondy.check_order(sub.order_id)
         log.info(check)
         if (now() - now_date).seconds > 60*15:
             await delete_sub(msg, sub, sub_db, user_db, sheet, config)
+            scheduler.get_job(sub.job_id).remove()
         if check:
             user = await user_db.get_user(sub.user_id)
+            scheduler.get_job(sub.job_id).remove()
             await user_db.update_user(user.user_id, hours=user.hours + 10)
             await check_user_status(user, msg, user_db)
             await sub_db.update_sub(sub.sub_id, total_hours=sub.total_hours, status=SubStatusEnum.ACTIVE)
             await msg.delete_reply_markup()
             await msg.reply(f'Оплата абонементу №{sub.sub_id} успішно оплачено', reply_markup=menu_kb)
             sheet.write_event(await sub_db.get_sub(sub.sub_id), user, config.misc.spreadsheet)
-            break
-        time.sleep(timeout)
+            for admin_id in config.bot.admin_ids:
+                try:
+                    text = (
+                        f'🆕⭐ (№{sub.sub_id}) Новий абонемент придбаний користувачем {user.full_name}\n\n'
+                        f'📌 Дата: {localize(sub.created_at).strftime("%A %d, %B")}\n'
+                        f'Додаткова інформація: {sub.description}'
+                    )
+                    await msg.bot.send_message(admin_id, text=text)
+                except:
+                    pass
+    except Exception as Error:
+        error = str(Error).replace('<', '').replace('>', '')
+        user = await user_db.get_user(sub.user_id)
+        log.warning(f'Помилка оплати #{sub.sub_id}\n\n{Error}\n')
+        await msg.answer(f'❌ Оплата абонементу №{sub.sub_id} не була зафіксована через помилку\n\n{error}\n\n'
+                         f'Будь-ласка зв\'яжіться з адміністрацією для уточнення.')
+        for admin_id in config.bot.admin_ids:
+            await msg.bot.send_message(admin_id, f'❌ Оплата від користувача {user.full_name} (№{sub.sub_id}) '
+                                                 f'була не зарахована через помилку\n\n{error}\n\n'
+                                                 f'Номер телефону: {user.phone_number}')
+        scheduler.get_job(sub.job_id).remove()
 
 
 async def delete_sub(msg: Message, sub: Subscribe, sub_db: SubRepo, user_db: UserRepo, sheet: GoogleSheet,
@@ -474,14 +578,12 @@ async def check_time_is_free(calendar_db: CalendarRepo, calendar: GoogleCalendar
     reserved_times_answer_cache = []
     for court in await calendar_db.get_all():
         calendar.insert_calendar(court.google_id)
-        print(court.name, court.google_id)
         reserved_times = calendar.reserved_time(court.google_id, start)
         times += f'\nКорт №{court.calendar_id}:'
         times += ''.join([f'\n▫ {t}' for t in reserved_times]) if reserved_times else ' Відсутні'
         reserved_times_date = []
 
         for t in reserved_times:
-            print(t)
             reserved_times_answer_cache.append(t)
             start_str, end_str = t.split(' - ')
             start_date = start.replace(hour=int(start_str.split(':')[0]), minute=int(start_str.split(':')[1]))
@@ -491,7 +593,6 @@ async def check_time_is_free(calendar_db: CalendarRepo, calendar: GoogleCalendar
         check = []
         for t in reserved_times_date:
             reserved_start, reserved_end = t
-            print(reserved_start, reserved_end)
             if reserved_start < end < reserved_end:
                 check.append(False)
             elif reserved_start < start < reserved_end:
@@ -500,7 +601,6 @@ async def check_time_is_free(calendar_db: CalendarRepo, calendar: GoogleCalendar
                 check.append(False)
             else:
                 check.append(True)
-        print(check)
         if all(check):
             return court, '', []
     reserved_times_answer = []
@@ -509,3 +609,17 @@ async def check_time_is_free(calendar_db: CalendarRepo, calendar: GoogleCalendar
         if reserved_times_answer_cache.count(t) > 1:
             reserved_times_answer.append(t)
     return None, times, list(reserved_times_answer)
+
+
+guide_text = (
+    'Вартість для одночасного перебування на корті не більше 6 осіб. '
+    'Доплата за кожну особу додатково - 100 грн. за годину\n\n'
+    '‼️Правила‼️\n\n'
+    '1. Відмінити бронювання можна не пізніше ніж за 8 годин.⏳\n'
+    '2. Потрібно мати змінні капці або ж придбати одноразові на рецепції.\n'
+    '3. Не можна виносити їжу на пісок.\n'
+    '4. Не можна виносити напої, окрім води у пластмасовій пляшці на пісок.\n'
+    '5. Не можна перебувати на корті з голим торсом.\n'
+    '6. Треба вирівняти корт після себе (почати за 5хв до кінця броні).\n'
+    '7. Обов‘язково мати при собі гарний настрій!☺\n'
+)
